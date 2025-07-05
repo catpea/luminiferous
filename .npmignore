@@ -1,1 +1,1 @@
-/example/
+# In general, including the docs folder is beneficial for users and aligns with common practices in the JavaScript community. However, if you have specific reasons to exclude it, you can do so while ensuring that users can still access the documentation through other means. Ultimately, the decision should be based on the needs of your users and the nature of your project.

@@ -1,0 +1,1026 @@
+/**
+ * @fileoverview Luminiferous - Signal integrated template literals for reactive DOM manipulation
+ * @author catpea
+ * @version 1.0.0
+ * @description A lightweight reactive templating system that combines ES6 template literals with reactive signals
+ * for dynamic DOM updates. Supports automatic subscription management and memory cleanup.
+ * @example
+ * // Basic usage
+ * import { html, Signal } from "luminiferous";
+ * const name = new Signal("World");
+ * const element = html`<div>Hello ${name}!</div>`;
+ * document.body.appendChild(element);
+ *
+ * // Updates automatically reflect in DOM
+ * name.set("Universe");
+ *
+ * // Cleanup when done
+ * element.unsubscribe();
+ */
+
+/**
+ * Generates a random ID string for unique identification of signals and records
+ * @function rid
+ * @returns {string} A random 9-character alphanumeric identifier
+ * @private
+ * @example
+ * const id = rid(); // "k3j2h4l9m"
+ */
+function rid() {
+  return Math.random().toString(36).substr(2, 9);
+}
+
+/**
+ * A reactive signal class that manages state and notifies subscribers of changes.
+ * Signals are the core reactive primitive that automatically update the DOM when their values change.
+ * @class Signal
+ * @example
+ * // Basic signal usage
+ * const counter = new Signal(0);
+ * const unsubscribe = counter.subscribe(value => console.log('Count:', value));
+ * counter.set(5); // Logs: Count: 5
+ * unsubscribe(); // Cleanup subscription
+ *
+ * @example
+ * // Signal with custom equality check
+ * const user = new Signal({id: 1, name: "John"}, (a, b) => a.id === b.id);
+ * user.set({id: 1, name: "Jane"}); // Won't notify - same ID
+ *
+ * @example
+ * // Signal with custom test function
+ * const data = new Signal(null, undefined, v => v !== null);
+ * data.set(null); // Won't notify subscribers
+ * data.set("hello"); // Will notify subscribers
+ */
+class Signal {
+  /**
+   * The class name identifier for type checking
+   * @type {string}
+   * @readonly
+   */
+  name = "Signal";
+
+  /**
+   * Unique identifier for this signal instance
+   * @type {string}
+   * @private
+   */
+  #id;
+
+  /**
+   * The current value stored in the signal
+   * @type {*}
+   * @private
+   */
+  #value;
+
+  /**
+   * Test function to determine if value is valid for notification
+   * @type {Function}
+   * @private
+   */
+  #test;
+
+  /**
+   * Comparison function to determine if values are equal
+   * @type {Function}
+   * @private
+   */
+  #same;
+
+  /**
+   * Set of subscriber functions that get called when value changes
+   * @type {Set<Function>}
+   * @private
+   */
+  #subscribers;
+
+  /**
+   * Creates a new Signal instance with optional custom equality and test functions
+   * @param {*} value - Initial value for the signal
+   * @param {Function} [same=(a, b) => a == b] - Function to compare values for equality.
+   *   Should return true if values are considered equal (won't trigger notifications)
+   * @param {Function} [test=(v) => v !== undefined] - Function to test if value should trigger notifications.
+   *   Should return true if subscribers should be notified
+   * @throws {TypeError} If same or test parameters are not functions when provided
+   * @example
+   * // Basic signal
+   * const name = new Signal("John");
+   *
+   * // Signal with custom equality check for objects
+   * const user = new Signal({id: 1}, (a, b) => a?.id === b?.id);
+   *
+   * // Signal that only notifies for truthy values
+   * const status = new Signal(false, undefined, v => Boolean(v));
+   */
+  constructor(value, same = (a, b) => a == b, test = (v) => v !== undefined) {
+    this.#value = value;
+    this.#test = test;
+    this.#same = same;
+    this.#subscribers = new Set();
+  }
+
+  /**
+   * Gets the current value of the signal
+   * @returns {*} The current value
+   * @example
+   * const signal = new Signal("hello");
+   * console.log(signal.get()); // "hello"
+   */
+  get() {
+    return this.value;
+  }
+
+  /**
+   * Sets a new value for the signal and notifies subscribers if changed
+   * @param {*} v - The new value to set
+   * @example
+   * const signal = new Signal(0);
+   * signal.set(5); // Will notify subscribers
+   * signal.set(5); // Won't notify subscribers (same value)
+   */
+  set(v) {
+    this.value = v;
+  }
+
+  /**
+   * Gets the unique identifier for this signal, generating one if needed
+   * @returns {string} The signal's unique ID
+   * @readonly
+   * @example
+   * const signal = new Signal("test");
+   * console.log(signal.id); // "k3j2h4l9m" (example)
+   */
+  get id() {
+    if (!this.#id) this.#id = rid();
+    return this.#id;
+  }
+
+  /**
+   * Gets the current value of the signal
+   * @returns {*} The current value
+   * @example
+   * const signal = new Signal("hello");
+   * console.log(signal.value); // "hello"
+   */
+  get value() {
+    return this.#value;
+  }
+
+  /**
+   * Sets a new value and notifies subscribers if the value has changed according to the equality function
+   * @param {*} newValue - The new value to set
+   * @fires Signal#notify
+   * @example
+   * const signal = new Signal(0);
+   * signal.subscribe(v => console.log('New value:', v));
+   * signal.value = 5; // Logs: New value: 5
+   * signal.value = 5; // No log (same value)
+   */
+  set value(newValue) {
+    if (this.#same(this.#value, newValue)) return;
+    this.#value = newValue;
+    this.notify();
+  }
+
+  /**
+   * Subscribes a function to be called when the signal value changes.
+   * The subscriber is immediately called with the current value if it passes the test function.
+   * @param {Function} subscriber - Function to call when value changes. Receives the new value as argument.
+   * @returns {Function} Unsubscribe function to remove this subscription
+   * @throws {TypeError} If subscriber is not a function
+   * @example
+   * const signal = new Signal("initial");
+   * const unsubscribe = signal.subscribe(value => {
+   *   console.log("New value:", value);
+   * });
+   * // Logs: New value: initial (immediate call)
+   *
+   * signal.set("updated"); // Logs: New value: updated
+   * unsubscribe(); // Remove subscription
+   * signal.set("final"); // No log (unsubscribed)
+   */
+  subscribe(subscriber) {
+    if (typeof subscriber !== 'function') {
+      throw new TypeError('Subscriber must be a function');
+    }
+
+    // Call subscriber immediately if current value passes test
+    if (this.#test(this.#value)) subscriber(this.#value);
+
+    this.#subscribers.add(subscriber);
+    return () => this.#subscribers.delete(subscriber);
+  }
+
+  /**
+   * Notifies all subscribers of the current value if it passes the test function
+   * @private
+   * @fires Signal#valueChanged
+   * @example
+   * // This method is called internally when value changes
+   * signal.notify(); // Calls all subscribers with current value
+   */
+  notify() {
+    if (this.#test(this.#value)) {
+      for (const subscriber of this.#subscribers) {
+        subscriber(this.#value);
+      }
+    }
+  }
+
+  /**
+   * Gets the number of active subscribers
+   * @returns {number} Number of active subscribers
+   * @readonly
+   * @example
+   * const signal = new Signal(0);
+   * console.log(signal.subscriberCount); // 0
+   * const unsub = signal.subscribe(v => {});
+   * console.log(signal.subscriberCount); // 1
+   */
+  get subscriberCount() {
+    return this.#subscribers.size;
+  }
+
+  /**
+   * Removes all subscribers from this signal
+   * @example
+   * const signal = new Signal(0);
+   * signal.subscribe(v => {});
+   * signal.subscribe(v => {});
+   * signal.clear(); // Removes all subscribers
+   */
+  clear() {
+    this.#subscribers.clear();
+  }
+}
+
+/**
+ * Represents a record in the template processing system that manages template variables and their metadata
+ * @class Record
+ * @description Internal class used to manage template variables and their metadata during HTML processing.
+ * Each record contains content (values, signals, etc.) and context information about how it should be processed.
+ * @private
+ */
+class Record {
+  /**
+   * Internal unique identifier for this record
+   * @type {string}
+   * @private
+   */
+  #id;
+
+  /**
+   * The actual content/payload (strings, objects, signals, DOM nodes, etc.)
+   * @type {*}
+   */
+  content;
+
+  /**
+   * Array of unsubscribe functions to execute on cleanup
+   * @type {Function[]}
+   */
+  unsubscribe = [];
+
+  /**
+   * Indicates this record represents a template variable
+   * @type {boolean}
+   */
+  isTemplateVariable = true;
+
+  /**
+   * Indicates this record represents a template chunk (partial HTML)
+   * @type {boolean}
+   */
+  isTemplateChunk = false;
+
+  /**
+   * Creates a new Record instance for managing template content
+   * @param {string} id - Unique identifier for this record
+   * @param {*} content - The content/payload for this record (signals, strings, objects, etc.)
+   * @param {string|Object} [intelligence] - Context analysis data or attribute string for processing hints
+   * @example
+   * // Create a record for a signal
+   * const signal = new Signal("hello");
+   * const record = new Record("::1", signal, "class=");
+   *
+   * // Create a record with intelligence object
+   * const record2 = new Record("::2", "world", {isElementDomain: true});
+   */
+  constructor(id, content, intelligence) {
+    this.#id = id;
+    this.content = content;
+
+    // Parse intelligence parameter for context analysis
+    if (typeof intelligence === "string") {
+      Object.assign(this, decodeAttribute(intelligence));
+    }
+    if (typeof intelligence === "object" && intelligence !== null) {
+      Object.assign(this, intelligence);
+    }
+  }
+
+  /**
+   * Gets the type name of the content stored in this record
+   * @returns {string} The type name (e.g., "string", "Signal", "Array", "Object", etc.)
+   * @example
+   * const record1 = new Record("id", "hello");
+   * console.log(record1.type); // "string"
+   *
+   * const record2 = new Record("id", new Signal(0));
+   * console.log(record2.type); // "Signal"
+   *
+   * const record3 = new Record("id", [1, 2, 3]);
+   * console.log(record3.type); // "Array"
+   */
+  get type() {
+    if (this.content === null) return "null";
+    if (this.content === undefined) return "undefined";
+
+    const primitiveType = typeof this.content;
+    if (primitiveType !== "object") {
+      return primitiveType;
+    }
+
+    // Handle built-in objects and user-defined classes
+    if (Array.isArray(this.content)) return "Array";
+
+    // Try to get the constructor name
+    if (this.content.constructor && this.content.constructor.name) {
+      return this.content.constructor.name;
+    }
+
+    // Fallback for objects without a constructor
+    return Object.prototype.toString.call(this.content).slice(8, -1);
+  }
+
+  /**
+   * True if content is a Signal instance
+   * @returns {boolean}
+   * @readonly
+   */
+  get isSignalType() {
+    return this.type === "Signal";
+  }
+
+  /**
+   * True if content is a plain Object
+   * @returns {boolean}
+   * @readonly
+   */
+  get isObjectType() {
+    return this.type === "Object";
+  }
+
+  /**
+   * True if content is a function
+   * @returns {boolean}
+   * @readonly
+   */
+  get isFunctionType() {
+    return this.type === "function";
+  }
+
+  /**
+   * True if content is null
+   * @returns {boolean}
+   * @readonly
+   */
+  get isNullType() {
+    return this.type === "null";
+  }
+
+  /**
+   * True if content is undefined
+   * @returns {boolean}
+   * @readonly
+   */
+  get isUndefinedType() {
+    return this.type === "undefined";
+  }
+
+  /**
+   * True if content is a string
+   * @returns {boolean}
+   * @readonly
+   */
+  get isStringType() {
+    return this.type === "string";
+  }
+
+  /**
+   * True if content is a number
+   * @returns {boolean}
+   * @readonly
+   */
+  get isNumberType() {
+    return this.type === "number";
+  }
+
+  /**
+   * True if content is an Array
+   * @returns {boolean}
+   * @readonly
+   */
+  get isArrayType() {
+    return this.type === "Array";
+  }
+
+  /**
+   * True if content is a DocumentFragment
+   * @returns {boolean}
+   * @readonly
+   */
+  get isDocumentFragmentType() {
+    return this.type === "DocumentFragment";
+  }
+
+  /**
+   * True if content is a NodeList
+   * @returns {boolean}
+   * @readonly
+   */
+  get isNodeListType() {
+    return this.content instanceof NodeList;
+  }
+
+  /**
+   * True if content is an HTMLCollection
+   * @returns {boolean}
+   * @readonly
+   */
+  get isHTMLCollectionType() {
+    return this.content instanceof HTMLCollection;
+  }
+
+  /**
+   * True if content is a DOM Node
+   * @returns {boolean}
+   * @readonly
+   */
+  get isNodeType() {
+    return this.content instanceof Node;
+  }
+
+  /**
+   * True if content represents DOM elements (Node, NodeList, HTMLCollection, or DocumentFragment)
+   * @returns {boolean}
+   * @readonly
+   */
+  get isElements() {
+    return this.isDocumentFragmentType || this.isNodeListType || this.isHTMLCollectionType || this.isNodeType;
+  }
+
+  /**
+   * True if content is iterable (excluding strings)
+   * @returns {boolean}
+   * @readonly
+   */
+  get isContentIterable() {
+    return this.content != null && typeof this.content !== "string" && typeof this.content[Symbol.iterator] === "function";
+  }
+
+  /**
+   * Makes the record iterable, yielding individual items or the content itself
+   * @returns {Generator} Iterator that yields content items
+   * @example
+   * const record = new Record("id", [1, 2, 3]);
+   * for (const item of record) {
+   *   console.log(item); // 1, 2, 3
+   * }
+   *
+   * const record2 = new Record("id", "hello");
+   * for (const item of record2) {
+   *   console.log(item); // "hello"
+   * }
+   */
+  *[Symbol.iterator]() {
+    if (this.isContentIterable) {
+      for (let item of this.content) {
+        yield item;
+      }
+    } else {
+      yield this.content;
+    }
+  }
+}
+
+/**
+ * Main template literal function that creates reactive DOM elements from template strings and signals
+ * @function html
+ * @param {TemplateStringsArray} strings - The template literal strings array
+ * @param {...*} values - The interpolated values (can include Signals, strings, objects, DOM nodes, etc.)
+ * @returns {DocumentFragment} A document fragment with reactive bindings and an unsubscribe method
+ * @example
+ * // Basic reactive template
+ * const name = new Signal("World");
+ * const element = html`<div>Hello ${name}!</div>`;
+ * document.body.appendChild(element);
+ *
+ * // Update will automatically reflect in DOM
+ * name.set("Universe");
+ *
+ * // Cleanup subscriptions when done
+ * element.unsubscribe();
+ *
+ * @example
+ * // Reactive attributes
+ * const isActive = new Signal(true);
+ * const className = new Signal("primary");
+ * const element = html`<button class="${className}" disabled="${isActive}">Click me</button>`;
+ *
+ * @example
+ * // Object attribute spreading
+ * const attrs = {id: "btn1", "data-value": "test"};
+ * const element = html`<button ${attrs}>Button</button>`;
+ *
+ * @example
+ * // Event handlers
+ * const handlers = {onclick: () => console.log("clicked")};
+ * const element = html`<button ${handlers}>Click me</button>`;
+ */
+function html({ raw: strings }, ...values) {
+  // PHASE 1: Initialize Data - Create Information Stream & Value Database
+  const [stream, database] = createStream(strings, values);
+
+  // PHASE 2: Create Intermediate HTML and Inject Into DOM - HTML With Markers
+  const htmlString = createIntermediateHtml(stream, database);
+  const template = document.createElement("template");
+  template.innerHTML = htmlString;
+  const node = document.importNode(template.content, true);
+
+  // PHASE 3: Upgrade Intermediate Attributes - Live Attributes
+  interpolateAttributes(node, database);
+
+  // PHASE 4: Upgrade Intermediate Nodes (Comment Nodes) - Node Import
+  interpolateNodes(node, database);
+
+  // Create cleanup function for all subscriptions
+  /**
+   * Unsubscribes from all reactive bindings in this template
+   * @memberof DocumentFragment
+   * @function unsubscribe
+   * @example
+   * const element = html`<div>${signal}</div>`;
+   * // Later, cleanup all subscriptions
+   * element.unsubscribe();
+   */
+  node.unsubscribe = () =>
+    [...database.values()]
+      .filter((record) => record.isTemplateVariable)
+      .filter((record) => record.unsubscribe.length > 0)
+      .map((record) => record.unsubscribe)
+      .flat()
+      .forEach((unsubscribeFn) => unsubscribeFn());
+
+  return node;
+}
+
+/**
+ * Creates a processing stream and database from template strings and values
+ * @private
+ * @param {TemplateStringsArray} strings - Template literal strings
+ * @param {Array} values - Interpolated values from the template
+ * @returns {Array} Returns an array containing [stream, database] where stream is an Array and database is a Map
+ * @example
+ * // Internal usage in html function
+ * const strings = ["<div>", "</div>"];
+ * const values = ["Hello"];
+ * const [stream, database] = createStream(strings, values);
+ */
+function createStream(strings, values) {
+  const stream = [];
+  const database = new Map();
+
+  for (const [index, string] of strings.entries()) {
+    const content = values[index];
+
+    // Add raw string to stream
+    stream.push({ isTemplateChunk: true, content: string });
+
+    if (content === undefined) continue;
+
+    // Store record in database for subscription management
+    const recordId = "::" + index;
+    database.set(recordId, new Record(recordId, content, string));
+
+    // Keep record reference in stream
+    stream.push({ isReference: true, id: recordId });
+  }
+
+  return [stream, database];
+}
+
+/**
+ * Decodes HTML attribute context to determine how to process template variables
+ * @private
+ * @param {string} htmlStr - HTML string context preceding the template variable
+ * @returns {Object} Object with context flags (isAttributeValueAssignment, isAttributeDomain, isElementDomain, etc.)
+ * @example
+ * // Attribute value assignment
+ * decodeAttribute('class="'); // {isAttributeValueAssignment: true, isClassAttribute: true, attributeName: "class"}
+ *
+ * // Attribute domain
+ * decodeAttribute('<div '); // {isAttributeDomain: true}
+ *
+ * // Element domain
+ * decodeAttribute('<div>'); // {isElementDomain: true}
+ */
+function decodeAttribute(htmlStr) {
+  const normalizedCharacterTokens = htmlStr.trim().replace(/['"]$/, "").split(/\s+/).pop();
+  const bracketCycle = htmlStr
+    .trim()
+    .split(/[^<>]/)
+    .filter((token) => token);
+
+  if (normalizedCharacterTokens.endsWith("=")) {
+    // Attribute value assignment: attribute="value"
+    const attributeName = normalizedCharacterTokens.substr(0, normalizedCharacterTokens.length - 1);
+    const capitalizedName = String(attributeName).charAt(0).toUpperCase() + String(attributeName).slice(1);
+    const isAttributeValueAssignment = true;
+    return {
+      attributeName,
+      isAttributeValueAssignment,
+      ["is" + capitalizedName + "Attribute"]: true,
+    };
+  } else if (bracketCycle.at(-1) === "<") {
+    // Attribute domain: <element attribute
+    const isAttributeDomain = true;
+    return { isAttributeDomain };
+  } else {
+    // Element domain: <element>content
+    return { isElementDomain: true };
+  }
+}
+
+/**
+ * Creates intermediate HTML string with markers for later processing
+ * @private
+ * @param {Array} stream - Processing stream containing template chunks and references
+ * @param {Map} database - Records database for looking up referenced content
+ * @returns {string} HTML string with markers that will be replaced during interpolation
+ * @example
+ * // Creates HTML like: <div class="::1"><!--::2--></div>
+ * // Where ::1 and ::2 are markers for later replacement
+ */
+function createIntermediateHtml(stream, database) {
+  const result = [];
+
+  for (const entry of stream) {
+    // Dereference stream entries
+    const fragment = entry.isReference ? database.get(entry.id) : entry;
+
+    const { isTemplateChunk, isTemplateVariable } = fragment;
+    const { isAttributeValueAssignment, isAttributeDomain, isElementDomain } = fragment;
+
+    if (isTemplateChunk) {
+      // Output raw HTML
+      result.push(fragment.content);
+    } else if (isTemplateVariable && isAttributeValueAssignment) {
+      // Marker for attribute value
+      result.push(entry.id);
+    } else if (isTemplateVariable && isAttributeDomain) {
+      // Marker for attribute domain
+      result.push(entry.id + '=""');
+    } else if (isTemplateVariable && isElementDomain) {
+      // Marker for element content
+      result.push("<!--" + entry.id + "-->");
+    }
+  }
+
+  return result.join("");
+}
+
+/**
+ * Processes and upgrades HTML attributes with reactive bindings
+ * @private
+ * @param {DocumentFragment} root - Root node to process
+ * @param {Map} database - Records database containing attribute data
+ * @description This function handles various types of attribute bindings:
+ * - Reactive attributes from signals
+ * - Object spreading for multiple attributes
+ * - Event handler assignments
+ * - Style object processing
+ * - Class array processing
+ */
+function interpolateAttributes(root, database) {
+  const elementWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+
+  while (elementWalker.nextNode()) {
+    const attributesToProcess = [];
+
+    // Collect all attributes that need processing
+    for (const attribute of [...elementWalker.currentNode.attributes]) {
+      // Handle object attribute spreads (::4="")
+      if (attribute.name.startsWith("::")) {
+        const packet = database.get(attribute.name);
+        if (packet && packet.isObjectType) {
+          for (const [attributeName, content] of Object.entries(packet.content)) {
+            const capitalizedName = String(attributeName).charAt(0).toUpperCase() + String(attributeName).slice(1);
+            const recordId = attribute.name + "-" + attributeName;
+            const intelligence = {
+              isAttributeValueAssignment: true,
+              attributeName,
+              ["is" + capitalizedName + "Attribute"]: true
+            };
+            const attributePayload = new Record(recordId, content, intelligence);
+            database.set(recordId, attributePayload);
+            attributesToProcess.push({ attributeName, attributePayload });
+          }
+        }
+        elementWalker.currentNode.removeAttribute(attribute.name);
+      }
+
+      // Handle direct attribute value assignments (color="::6")
+      if (attribute.value.startsWith("::")) {
+        const attributeName = attribute.name;
+        const recordId = attribute.value;
+        const attributePayload = database.get(recordId);
+        if (!attributePayload) {
+          throw new Error(`Record id "${recordId}" was not found in the database.`);
+        }
+
+        attributesToProcess.push({ attributeName, attributePayload });
+        elementWalker.currentNode.removeAttribute(attribute.name);
+      }
+    }
+
+    // Process all collected attributes
+    for (const { attributeName, attributePayload: record } of attributesToProcess) {
+      const currentNode = elementWalker.currentNode;
+
+      if (record.isSignalType && record.isStyleAttribute) {
+        // Handle reactive style objects
+        const signal = record.content;
+        const unsubscribe = signal.subscribe((styleObj) => {
+          if (styleObj && typeof styleObj === 'object') {
+            for (const [cssProperty, cssValue] of Object.entries(styleObj)) {
+              if (cssValue && typeof cssValue === 'object' && cssValue.subscribe) {
+                // Handle nested signals in style objects
+                const nestedUnsubscribe = cssValue.subscribe((value) => {
+                  currentNode.style[cssProperty] = value;
+                });
+                record.unsubscribe.push(nestedUnsubscribe);
+              } else {
+                currentNode.style[cssProperty] = cssValue;
+              }
+            }
+          }
+        });
+        record.unsubscribe.push(unsubscribe);
+      } else if (record.isClassAttribute && record.isArrayType) {
+        // Handle reactive class arrays
+        currentNode.user_currentState = new Set();
+        for (const item of record) {
+          if (item && typeof item === 'object' && item.subscribe) {
+            const unsubscribe = item.subscribe((value) => {
+              const expectedState = classes(value);
+              const currentState = currentNode.user_currentState;
+              const toRemove = currentState.difference ? currentState.difference(expectedState) : new Set([...currentState].filter(x => !expectedState.has(x)));
+              const toAdd = expectedState.difference ? expectedState.difference(currentState) : new Set([...expectedState].filter(x => !currentState.has(x)));
+
+              currentNode.classList.remove(...toRemove);
+              currentNode.classList.add(...toAdd);
+              currentNode.user_currentState = expectedState;
+            });
+            record.unsubscribe.push(unsubscribe);
+          } else {
+            currentNode.classList.add(String(item));
+          }
+        }
+      } else if (record.isSignalType) {
+        // Handle reactive attributes
+        const signal = record.content;
+        const unsubscribe = signal.subscribe((value) => {
+          if (value != null) {
+            currentNode.setAttribute(attributeName, String(value));
+          } else {
+            currentNode.removeAttribute(attributeName);
+          }
+        });
+        record.unsubscribe.push(unsubscribe);
+      } else if (record.isObjectType && record.isStyleAttribute) {
+        // Handle static style objects
+        for (const [cssProperty, cssValue] of Object.entries(record.content)) {
+          currentNode.style[cssProperty] = cssValue;
+        }
+      } else if (record.isObjectType) {
+        // Handle event handlers and other object properties
+        for (const [eventName, eventHandler] of Object.entries(record.content)) {
+          if (typeof eventHandler === "function") {
+            currentNode[eventName] = eventHandler;
+          }
+        }
+      } else if (record.isFunctionType) {
+        // Handle function attributes
+        currentNode[attributeName] = record.content;
+      } else if (record.isStringType || record.isNumberType) {
+        // Handle primitive attributes
+        currentNode.setAttribute(attributeName, String(record.content));
+      } else if (record.content != null) {
+        // Handle other types with coercion
+        currentNode.setAttribute(attributeName, String(record.content));
+      }
+    }
+  }
+}
+
+/**
+ * Processes and upgrades comment node markers with actual content
+ * @private
+ * @param {DocumentFragment} root - Root node to process
+ * @param {Map} database - Records database containing node content
+ * @description Replaces comment markers (<!--::1-->) with actual DOM content based on the record type
+ */
+function interpolateNodes(root, database) {
+  const commentWalker = document.createTreeWalker(
+    root,
+    NodeFilter.SHOW_COMMENT,
+    {
+      acceptNode: (node) => (node.data.startsWith("::") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
+    }
+  );
+
+  const nodesToRemove = [];
+
+  while (commentWalker.nextNode()) {
+    const currentNode = commentWalker.currentNode;
+    nodesToRemove.push(currentNode);
+
+    const nodesToImport = [];
+    const record = database.get(currentNode.data);
+
+    if (record) {
+      nodeImporter(nodesToImport, record);
+    }
+
+    // Insert accumulated nodes after the comment marker
+    if (nodesToImport.length > 0) {
+      currentNode.after(...nodesToImport);
+    } else {
+      console.warn(`Warning: no new nodes were added for ${currentNode.data}`);
+    }
+  }
+
+  // Remove comment markers after processing
+  for (const node of nodesToRemove) {
+    node.remove();
+  }
+}
+
+/**
+ * Imports content into DOM nodes based on content type
+ * @private
+ * @param {Array} accumulator - Array to collect nodes for insertion
+ * @param {Record} record - Record containing content to import
+ * @description Handles different content types and creates appropriate DOM nodes:
+ * - Strings become text nodes
+ * - Signals become reactive text nodes
+ * - Arrays are flattened and processed
+ * - DOM elements are inserted directly
+ * @example
+ * const accumulator = [];
+ * const record = new Record("id", "Hello World");
+ * nodeImporter(accumulator, record);
+ * // accumulator now contains [TextNode("Hello World")]
+ */
+function nodeImporter(accumulator, record) {
+  if (record.isStringType) {
+    // Handle string content - create text node
+    const textNode = document.createTextNode(record.content);
+    accumulator.push(textNode);
+  } else if (record.isSignalType) {
+    // Handle reactive text nodes
+    const signal = record.content;
+    const textNode = document.createTextNode(String(signal.value));
+    const unsubscribe = signal.subscribe((value) => {
+      textNode.nodeValue = String(value);
+    });
+    record.unsubscribe.push(unsubscribe);
+    accumulator.push(textNode);
+  } else if (record.isArrayType) {
+    // Handle arrays of content - flatten and process each item
+    for (const item of record.content) {
+      if (item instanceof Node) {
+        accumulator.push(item);
+      } else if (item && typeof item === 'object' && item.subscribe) {
+        // Handle signals in arrays
+        const textNode = document.createTextNode(String(item.value));
+        const unsubscribe = item.subscribe((value) => {
+          textNode.nodeValue = String(value);
+        });
+        record.unsubscribe.push(unsubscribe);
+        accumulator.push(textNode);
+      } else {
+        // Handle other array items as text
+        const textNode = document.createTextNode(String(item));
+        accumulator.push(textNode);
+      }
+    }
+  } else if (record.isElements) {
+    // Handle DOM elements - add directly
+    for (const node of record) {
+      accumulator.push(node);
+    }
+  } else if (record.isNumberType) {
+    // Handle numeric content
+    const textNode = document.createTextNode(String(record.content));
+    accumulator.push(textNode);
+  } else if (record.content != null) {
+    // Handle other types with string conversion
+    const textNode = document.createTextNode(String(record.content));
+    accumulator.push(textNode);
+  } else {
+    // Handle null/undefined - create empty text node
+    const textNode = document.createTextNode('');
+    accumulator.push(textNode);
+  }
+}
+
+/**
+ * Utility function to process CSS classes from various input formats
+ * @function classes
+ * @param {...*} args - Class arguments (strings, arrays, objects, or signals)
+ * @returns {Set<string>} Set of class names to apply
+ * @description Processes different types of class inputs:
+ * - Strings: split by spaces and add individual classes
+ * - Arrays: recursively process each item
+ * - Objects: add keys as classes if their values are truthy
+ * - Signals: not directly handled here (should be subscribed to separately)
+ * @example
+ * // String input
+ * classes("foo bar"); // Set{"foo", "bar"}
+ *
+ * // Array input
+ * classes(["foo", "bar"]); // Set{"foo", "bar"}
+ *
+ * // Object input (conditional classes)
+ * classes({active: true, disabled: false}); // Set{"active"}
+ *
+ * // Mixed input
+ * classes("foo bar", {active: true, disabled: false}, ["baz"]);
+ * // Returns Set{"foo", "bar", "active", "baz"}
+ *
+ * // Nested arrays
+ * classes(["foo", ["bar", "baz"]]); // Set{"foo", "bar", "baz"}
+ */
+function classes(...args) {
+  const result = new Set();
+
+  /**
+   * Adds a class string to the result set
+   * @param {string} cls - Class string to add (may contain spaces)
+   * @private
+   */
+  const addClass = (cls) => {
+    if (typeof cls === "string" && cls.trim()) {
+      cls.trim().split(/\s+/).forEach((className) => {
+        if (className) result.add(className);
+      });
+    }
+  };
+
+  /**
+   * Recursively processes a class argument
+   * @param {*} arg - Argument to process
+   * @private
+   */
+  const process = (arg) => {
+    if (!arg && arg !== 0) return; // Skip falsy values except 0
+
+    if (typeof arg === "string") {
+      addClass(arg);
+    } else if (Array.isArray(arg)) {
+      arg.forEach(process);
+    } else if (typeof arg === "object" && arg.constructor === Object) {
+      // Only process plain objects, not instances of classes
+      for (const key in arg) {
+        if (Object.prototype.hasOwnProperty.call(arg, key)) {
+          if (arg[key]) {
+            addClass(key);
+          } else {
+            result.delete(key); // Remove class if falsy
+          }
+        }
+      }
+    } else if (typeof arg === "number") {
+      addClass(String(arg));
+    }
+  };
+
+  args.forEach(process);
+  return result;
+}
+
+/**
+ * Polyfill for Set.prototype.difference if not available
+ * @private
+ */
+if (!Set.prototype.difference) {
+  Set.prototype.difference = function(other) {
+    return new Set([...this].filter(x => !other.has(x)));
+  };
+}
+
+// Export the main functions
+export { html, Signal };
