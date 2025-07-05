@@ -1,7 +1,7 @@
 {
   "name": "luminiferous",
   "type": "module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Signal integrated template literals (Signal integrated template strings)",
   "main": "index.js",
   "scripts": {
