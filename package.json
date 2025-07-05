@@ -1,0 +1,22 @@
+{
+  "name": "luminiferous",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Signal integrated template literals (Signal integrated template strings)",
+  "main": "index.js",
+  "scripts": {
+    "web": "http-server -o -c-1 .",
+    "save": "git add .; git commit -m 'Updated Release'; npm version patch; npm publish; git push --follow-tags;"
+  },
+  "keywords": [],
+  "author": "@catpea",
+  "license": "GPL",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/catpea/luminiferous.git"
+  },
+  "bugs": {
+    "url": "https://github.com/catpea/luminiferous/issues"
+  },
+  "homepage": "https://github.com/catpea/luminiferous#readme"
+}

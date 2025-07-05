@@ -1,8 +1,3 @@
-# luminiferous
-Signal integrated template literals (Signal integrated template strings)
-
-```JavaScript
-
 import { html, Signal } from "luminiferous";
 
 const value1 = "Hello";
@@ -20,6 +15,3 @@ const content = html`
 
 document.body.appendChild(content);
 //IMPORTANT: to unsubscribe from signals: execute content.unsubscribe();
-
-
-```
